@@ -64,8 +64,9 @@ sdlc_repo_of() {
 sdlc_collapse_path() {
   local p="$1" lead="" seg out=()
   case "$p" in /*) lead="/" ;; esac
+  local segs; IFS=/ read -r -a segs <<< "$p"
   local IFS=/
-  for seg in $p; do
+  for seg in "${segs[@]}"; do
     case "$seg" in
       ""|.) ;;
       ..) if [ "${#out[@]}" -gt 0 ] && [ "${out[${#out[@]}-1]}" != ".." ]; then unset 'out[${#out[@]}-1]'; elif [ -z "$lead" ]; then out+=(..); fi ;;

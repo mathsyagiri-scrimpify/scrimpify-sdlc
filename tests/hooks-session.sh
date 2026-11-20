@@ -71,6 +71,10 @@ expect_empty "$(sdlc_rel_path "$repo" "$repo/../x.cs")" "rel_path above repo roo
 expect_empty "$(sdlc_rel_path "$repo" "$repo/a/../../x.cs")" "rel_path climbing out is empty"
 expect_eq "$(sdlc_rel_path /d/r 'D:\r\src\..\x.cs')" "x.cs" "rel_path windows form with .."
 expect_eq "$(sdlc_rel_path 'D:\r' 'D:\r\src\.\a\..\x.cs')" "src/x.cs" "rel_path windows repo and path"
+mkdir -p "$TMP/globcwd/a" "$TMP/globcwd/b"
+expect_eq "$(cd "$TMP/globcwd" && sdlc_collapse_path '/d/r/*/../z')" "/d/r/z" "collapse_path does not glob (cwd with two entries)"
+expect_eq "$(cd "$TMP/globcwd" && sdlc_rel_path /d/r '/d/r/*/../z')" "z" "rel_path does not glob"
+expect_eq "$(cd "$TMP/globcwd" && sdlc_rel_path /d/r '/d/r/[ab]/?/x')" "[ab]/?/x" "rel_path keeps glob characters literal"
 expect_eq "$(sdlc_branch "$repo")" "main" "branch"
 git -C "$TMP/r" checkout -q --detach
 expect_empty "$(sdlc_branch "$repo")" "branch empty when detached"
