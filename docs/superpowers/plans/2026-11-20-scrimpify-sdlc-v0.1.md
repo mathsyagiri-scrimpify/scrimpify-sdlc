@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **Clean room:** write every file fresh. Do not open any other organisation's plugin files (nothing under `C:\Users\*\.claude\plugins\` or `E:\`). The repo must not contain `yapi`, `doctorlogic`, `dl-sdlc` or `practicaldentalsolutions` (case-insensitive); Task 16 tests it.
+- **Clean room:** write every file fresh. Do not open any other organisation's plugin files (nothing under `C:\Users\*\.claude\plugins\` or `E:\`). The repo must not contain the names of any other organisation or its tooling (case-insensitive); Task 16 tests it with a list the controller supplies.
 - Under `plugin/`: bash, git, sed, awk, grep, tr, cut, sort, head, find, mktemp only. **No jq, python, node.** Tests may use `python` only to validate JSON.
 - LF endings for `*.sh`, `*.md`, `*.json`, `*.yml` (`.gitattributes`).
 - Plugin and marketplace name `scrimpify-sdlc`; version `0.1.0` in `plugin/VERSION` and `plugin/.claude-plugin/plugin.json`; repository `https://github.com/mathsyagiri-scrimpify/scrimpify-sdlc`.
@@ -302,7 +302,7 @@ From design §6.4 and §3 (QA independence), plus:
 
 **Files:** Create `.github/workflows/ci.yml`, `tests/version-guard.sh`; add to `tests/repo.sh`; complete `README.md`
 
-- [ ] **Step 1: Write tests:** `git grep -i -E 'yapi|doctorlogic|dl-sdlc|practicaldentalsolutions'` finds nothing (and the grep searched a non-empty file list); no CR characters in `*.sh`; `tests/version-guard.sh` with `BASE`: a diff touching `plugin/` must include `plugin/VERSION` and `CHANGELOG.md`.
+- [ ] **Step 1: Write tests:** `tests/repo.sh` assembles the forbidden-name pattern from split string pieces (so the test file itself never matches; the controller supplies the names in the dispatch) and asserts `git grep -i -E "$pattern"` over all tracked files finds nothing (and that the grep searched a non-empty file list); no CR characters in `*.sh`; `tests/version-guard.sh` with `BASE`: a diff touching `plugin/` must include `plugin/VERSION` and `CHANGELOG.md`.
 - [ ] **Step 2: Run** → PASS (fix what fails).
 - [ ] **Step 3: `ci.yml`:** `tests` on `ubuntu-latest` + `windows-latest` (`shell: bash`, `bash tests/run.sh`); `version-guard` (`fetch-depth: 0`); on PRs and pushes to `main`.
 - [ ] **Step 4: README:** what it is; install at project scope (two commands, commit `.claude/settings.json`); `settings.local.json` to disable other plugins; adoption order (design §10); skills by role; how independence works (lanes, contracts, add-only, CODEOWNERS); hooks and their stated limits; what's enforced vs convention; the E2E-after-merge gap; contributing (bump VERSION + CHANGELOG, tests green).
