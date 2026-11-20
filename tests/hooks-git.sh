@@ -11,6 +11,7 @@ trap 'rm -rf "$TMP"' EXIT
 . "$LIB"
 
 NL=$'\n'
+TAB=$'\t'
 
 echo "sdlc_command"
 SDLC_PAYLOAD='{"command":"decoy","tool_name":"Bash","tool_input":{"command":"git status"},"cwd":"/x"}'
@@ -23,6 +24,8 @@ SDLC_PAYLOAD='{"tool_input":{"command":"echo \"a\\nb\" C:\\new"}}'
 expect_eq "$(sdlc_command)" 'echo "a\nb" C:\new' "escaped backslash before n stays a backslash"
 SDLC_PAYLOAD='{"tool_input":{"command":"git commit -m \u0027x\u0027 \u0026\u0026 ls"}}'
 expect_eq "$(sdlc_command)" "git commit -m 'x' && ls" "\\u0027 and \\u0026 decoded"
+SDLC_PAYLOAD='{"tool_input":{"command":"a\tb"}}'
+expect_eq "$(sdlc_command)" "a${TAB}b" "\\t becomes a real tab"
 SDLC_PAYLOAD='{"tool_name":"Bash"}'
 expect_empty "$(sdlc_command)" "no tool_input -> empty"
 
@@ -272,6 +275,22 @@ t ask deny "$X" 'GH pr create --fill'
 echo "PowerShell backtick-escaped quote (finding 4)"
 t deny deny "$X" 'git commit -m "a`"b"; git push origin main' PowerShell
 t allow allow "$X" 'git commit -m "a`"b"' PowerShell
+
+echo "fix round 2: <<- with a real tab (A), quoted heredoc inside \$(...) (B), PowerShell gaps (C)"
+t deny deny "$X" "cat <<-EOF${NL}${TAB}body${NL}${TAB}EOF${NL}git push origin main"
+t deny deny "$X" "cat <<-EOF > f.txt${NL}${TAB}body${NL}${TAB}EOF${NL}git push --force origin 41-x"
+t allow allow "$X" "cat <<-EOF${NL}${TAB}body${NL}${TAB}EOF${NL}git status"
+t deny deny "$X" "git commit -m \"\$(cat <<'EOF'${NL}Fix 6\" display${NL}EOF${NL})\" && git push origin main && echo \"done\""
+t allow allow "$X" "git commit -m \"\$(cat <<'EOF'${NL}Block \`git push --force\` in guard${NL}EOF${NL})\""
+t deny deny "$M" "git commit -m \"\$(cat <<'EOF'${NL}Block \`git push --force\` in guard${NL}EOF${NL})\""
+t allow allow "$X" "git commit -m \"\$(cat <<'EOF'${NL}message \$(git push origin main)${NL}EOF${NL})\""
+t allow allow "$X" "git commit -m \"\$(cat <<'EOF'${NL}message${NL}EOF${NL})\""
+t deny deny "$M" "git commit -m \"\$(cat <<'EOF'${NL}message${NL}EOF${NL})\""
+t deny deny "$X" "git commit -m \"\$(cat <<EOF${NL}\$(git push origin main)${NL}EOF${NL})\""
+t deny deny "$X" 'Get-ChildItem | where { git push origin main }' PowerShell
+t ask deny "$X" '1 | % { git push -u origin 41-x }' PowerShell
+t deny deny "$X" "Write-Output done\\${NL}git push origin main" PowerShell
+t deny deny "$X" 'echo a\; git push origin main' PowerShell
 
 echo "Windows cwd form"
 WINM="$(cd "$TMP/rm" && pwd -W 2>/dev/null)"

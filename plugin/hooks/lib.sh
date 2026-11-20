@@ -139,7 +139,7 @@ _sdlc_command_get() {
   [[ "$rest" =~ \"command\"[[:space:]]*:[[:space:]]*\"(([^\"\\]|\\.)*)\" ]] || return 0
   v="${BASH_REMATCH[1]}"
   v="${v//\\\\/$b}"
-  v="${v//\\n/$'\n'}"; v="${v//\\t/ }"; v="${v//\\r/}"
+  v="${v//\\n/$'\n'}"; v="${v//\\t/$'\t'}"; v="${v//\\r/}"
   v="${v//\\\"/\"}"; v="${v//\\\//\/}"
   v="${v//\\u0027/\'}"; v="${v//\\u0026/\&}"; v="${v//\\u003c/<}"; v="${v//\\u003e/>}"; v="${v//\\u0060/\`}"
   REPLY="${v//$b/\\}"
@@ -152,11 +152,11 @@ BEGIN { RS = "\001" }
 # process(s): split s into command segments (quote-aware) and flush each one.
 # Heredoc bodies and PowerShell here-strings are skipped as text (or processed as commands when they feed a shell);
 # an unmatched quote is a literal character, never "the rest of the command".
-function process(s,   len, i, j, k, c, d, ct, u, nt, nq, bc, rc, btok, rtok, qs, nh, hterm, hdash_a, hquot_a, sl, hdash, hquot, wst, w, q, pos, ln, body, line, nl) {
+function process(s,   len, i, j, k, c, d, ct, u, nt, nq, bc, rc, btok, rtok, qs, nh, hterm, hdash_a, hquot_a, sl, e, q, pos, body) {
   len = length(s); nt = 0; nq = 0; bc = ""; rc = ""; nh = 0
   for (i = 1; i <= len; i++) {
     c = substr(s, i, 1)
-    if (c == "\\") {
+    if (c == "\\" && !ps) {
       d = substr(s, i + 1, 1)
       if (d == "\n") { i++; continue }
       bc = bc c d; rc = rc c d; i++
@@ -183,24 +183,8 @@ function process(s,   len, i, j, k, c, d, ct, u, nt, nq, bc, rc, btok, rtok, qs,
       }
     }
     if (!ps && c == "<" && substr(s, i + 1, 1) == "<" && substr(s, i + 2, 1) != "<") {
-      j = i + 2
-      hdash = 0
-      if (substr(s, j, 1) == "-") { hdash = 1; j++ }
-      while (substr(s, j, 1) == " " || substr(s, j, 1) == "\t") j++
-      w = ""; hquot = 0; wst = substr(s, j, 1)
-      while (j <= len) {
-        d = substr(s, j, 1)
-        if (d == "'" || d == "\"") {
-          hquot = 1; q = d; j++
-          while (j <= len && substr(s, j, 1) != q) { w = w substr(s, j, 1); j++ }
-          j++
-          continue
-        }
-        if (d == "\\") { hquot = 1; j++; continue }
-        if (d == " " || d == "\t" || d == "\n" || d == ";" || d == "&" || d == "|" || d == "(" || d == ")" || d == "<" || d == ">") break
-        w = w d; j++
-      }
-      if (w != "" && (wst == "'" || wst == "\"" || wst == "\\" || wst ~ /[A-Za-z_]/)) { nh++; hterm[nh] = w; hdash_a[nh] = hdash; hquot_a[nh] = hquot; i = j - 1; continue }
+      parse_heredoc(s, i)
+      if (HOK) { nh++; hterm[nh] = HW; hdash_a[nh] = HD; hquot_a[nh] = HQ; i = HEND - 1; continue }
     }
     if (c == "'") {
       j = index(substr(s, i + 1), "'")
@@ -216,6 +200,13 @@ function process(s,   len, i, j, k, c, d, ct, u, nt, nq, bc, rc, btok, rtok, qs,
         d = substr(s, j, 1)
         if (d == "\\" && !ps) { ct = ct d substr(s, j + 1, 1); j += 2; continue }
         if (d == "`" && ps) { ct = ct d substr(s, j + 1, 1); j += 2; continue }
+        if (d == "$" && substr(s, j + 1, 1) == "(") {
+          # a command substitution is parsed as its own command (quotes and heredocs inside it are its own)
+          e = findclose(s, j + 2)
+          process(substr(s, j + 2, e - (j + 2)))
+          ct = ct "$()"; j = e + 1
+          continue
+        }
         if (d == "\"") { k = 1; break }
         ct = ct d; j++
       }
@@ -245,16 +236,8 @@ function process(s,   len, i, j, k, c, d, ct, u, nt, nq, bc, rc, btok, rtok, qs,
         if (nh > 0) {
           pos = i + 1; sl = shellline
           for (k = 1; k <= nh; k++) {
-            body = ""
-            while (pos <= len) {
-              ln = index(substr(s, pos), "\n")
-              if (ln == 0) { line = substr(s, pos); nl = len + 1 } else { line = substr(s, pos, ln - 1); nl = pos + ln }
-              u = line
-              if (hdash_a[k]) sub(/^\t+/, "", u)
-              pos = nl
-              if (u == hterm[k]) break
-              body = body line "\n"
-            }
+            body = heredoc_body(s, pos, hterm[k], hdash_a[k])
+            pos = HPOS
             if (sl) process(body)
             else if (!hquot_a[k]) substs(body)
           }
@@ -270,6 +253,83 @@ function process(s,   len, i, j, k, c, d, ct, u, nt, nq, bc, rc, btok, rtok, qs,
   if (bc != "") { btok[++nt] = bc; rtok[nt] = rc }
   flush(nt, btok, rtok, nq, qs)
   shellline = 0
+}
+
+# parse_heredoc(s, i): s[i..i+1] is "<<". Sets HOK (a heredoc really starts), HW (delimiter), HQ (delimiter quoted: body is
+# literal), HD (<<-), HEND (index just after the delimiter word). A digit-led word (arithmetic 1<<2) is not a heredoc.
+function parse_heredoc(s, i,   j, d, q, wst, len) {
+  len = length(s); j = i + 2; HD = 0
+  if (substr(s, j, 1) == "-") { HD = 1; j++ }
+  while (substr(s, j, 1) == " " || substr(s, j, 1) == "\t") j++
+  HW = ""; HQ = 0; wst = substr(s, j, 1)
+  while (j <= len) {
+    d = substr(s, j, 1)
+    if (d == "'" || d == "\"") {
+      HQ = 1; q = d; j++
+      while (j <= len && substr(s, j, 1) != q) { HW = HW substr(s, j, 1); j++ }
+      j++
+      continue
+    }
+    if (d == "\\") { HQ = 1; j++; continue }
+    if (d == " " || d == "\t" || d == "\n" || d == ";" || d == "&" || d == "|" || d == "(" || d == ")" || d == "<" || d == ">") break
+    HW = HW d; j++
+  }
+  HEND = j
+  HOK = (HW != "" && (wst == "'" || wst == "\"" || wst == "\\" || wst ~ /[A-Za-z_]/))
+}
+
+# heredoc_body(s, pos, term, dash): return the body lines starting at pos up to the terminator line (a <<- terminator may
+# be tab-indented); sets HPOS to the index after the terminator line.
+function heredoc_body(s, pos, term, dash,   len, ln, line, nl, u, body) {
+  len = length(s); body = ""
+  while (pos <= len) {
+    ln = index(substr(s, pos), "\n")
+    if (ln == 0) { line = substr(s, pos); nl = len + 1 } else { line = substr(s, pos, ln - 1); nl = pos + ln }
+    u = line
+    if (dash) sub(/^\t+/, "", u)
+    pos = nl
+    if (u == term) break
+    body = body line "\n"
+  }
+  HPOS = pos
+  return body
+}
+
+# findclose(s, p): p is just after "$(". Return the index of the matching ")" (len+1 if none), skipping quoted strings,
+# nested substitutions and heredoc bodies.
+function findclose(s, p,   len, d, depth, j, k, nh, ht, hd, pos) {
+  len = length(s); depth = 1; nh = 0
+  for (j = p; j <= len; j++) {
+    d = substr(s, j, 1)
+    if ((d == "\\" && !ps) || (d == "`" && ps)) { j++; continue }
+    if (d == "'") { k = index(substr(s, j + 1), "'"); if (k == 0) return len + 1; j += k; continue }
+    if (d == "\"") { j = dqend(s, j + 1); continue }
+    if (!ps && d == "<" && substr(s, j + 1, 1) == "<" && substr(s, j + 2, 1) != "<") {
+      parse_heredoc(s, j)
+      if (HOK) { nh++; ht[nh] = HW; hd[nh] = HD; j = HEND - 1; continue }
+    }
+    if (d == "\n" && nh > 0) {
+      pos = j + 1
+      for (k = 1; k <= nh; k++) { heredoc_body(s, pos, ht[k], hd[k]); pos = HPOS }
+      j = pos - 1; nh = 0
+      continue
+    }
+    if (d == "(") depth++
+    else if (d == ")") { depth--; if (depth == 0) return j }
+  }
+  return len + 1
+}
+
+# dqend(s, p): p is just after an opening ". Return the index of the closing " (len+1 if none), skipping $(...).
+function dqend(s, p,   len, j, d) {
+  len = length(s)
+  for (j = p; j <= len; j++) {
+    d = substr(s, j, 1)
+    if ((d == "\\" && !ps) || (d == "`" && ps)) { j++; continue }
+    if (d == "$" && substr(s, j + 1, 1) == "(") { j = findclose(s, j + 2); continue }
+    if (d == "\"") return j
+  }
+  return len + 1
 }
 
 # substs(ct): process $(...) and `...` found inside a double-quoted string as their own commands.

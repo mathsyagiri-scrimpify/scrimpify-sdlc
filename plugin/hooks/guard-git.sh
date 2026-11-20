@@ -216,6 +216,17 @@ wbase() {
   REPLY="${b%.exe}"
 }
 
+# is_exempt <program>: commands that only print their arguments, so a later "git" word is not a command. PowerShell has a
+# different list: `where`/`%`/`foreach` run script blocks there and must not be exempt.
+is_exempt() {
+  if [ -n "$PSMODE" ]; then
+    case "$1" in echo|write-host|write-output|select-string) return 0 ;; esac
+  else
+    case "$1" in echo|printf|grep|egrep|rg|man|which|type|where|whereis) return 0 ;; esac
+  fi
+  return 1
+}
+
 # guard_git_main: the hook body; reads the payload from stdin and prints a decision or nothing (callers then exit 0).
 guard_git_main() {
   sdlc_read_payload || exit 0
@@ -225,7 +236,8 @@ guard_git_main() {
   local lc="${cmd,,}"
   case "$lc" in *git*|*gh*) ;; *) exit 0 ;; esac   # cheap pre-filter: nothing else can match
   _sdlc_json_get tool_name
-  [ "${REPLY,,}" = powershell ] && segopt="--raw --ps"
+  PSMODE=""
+  [ "${REPLY,,}" = powershell ] && { segopt="--raw --ps"; PSMODE=1; }
 
   _sdlc_json_get cwd; _sdlc_posix "$REPLY"; cur="$REPLY"
   _sdlc_json_get agent_id
@@ -247,8 +259,8 @@ guard_git_main() {
         done ;;
       git) handle_git "$seg" ;;
       gh) handle_gh "$seg" ;;
-      echo|printf|grep|egrep|rg|man|which|type|where|whereis|write-host|write-output) ;;
       *)
+        is_exempt "$base" && continue
         # Fail closed: a runner in front of git/gh (xargs, timeout, find -exec, eval, cmd /c, ...) still counts.
         for ((i = 1; i < ${#SDLC_W[@]}; i++)); do
           wbase "${SDLC_W[$i]}"
