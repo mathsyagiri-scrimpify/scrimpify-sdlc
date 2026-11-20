@@ -13,10 +13,14 @@ quote() {
   [ "${#Q}" -le 200 ] || Q="${Q:0:200}..."
 }
 
-# block <rule> <segment>: deny, naming the rule. Applies to the main session and subagents alike.
+# block <rule> <segment>: deny, naming the rule (subagents also get the "never push" instruction).
 block() {
   quote "$2"
-  sdlc_decide deny "Blocked by guard-git: $1. Segment: \`$Q\`."
+  if [ -n "$SUB" ]; then
+    sdlc_decide deny "Blocked by guard-git: $1. Segment: \`$Q\`. $SUBMSG."
+  else
+    sdlc_decide deny "Blocked by guard-git: $1. Segment: \`$Q\`."
+  fi
   exit 0
 }
 
@@ -180,6 +184,7 @@ handle_api() { # seg  (SDLC_W/SDLC_WR hold the words of "gh api ...")
 }
 
 handle_gh() { # seg
+  sdlc_words "$1"   # the segment may start at a later word of the original (runner prefix)
   local seg="$1" k n="${#SDLC_W[@]}" wr skip=0 pos=()
   for ((k = 1; k < n; k++)); do
     wr="${SDLC_WR[$k]}"
@@ -204,24 +209,33 @@ handle_gh() { # seg
   return 0
 }
 
+# wbase <word>: set REPLY to the lowercase program name of <word> (directories and .exe dropped; \ or / separators).
+wbase() {
+  local b="${1##*[\\/]}"
+  b="${b,,}"
+  REPLY="${b%.exe}"
+}
+
 # guard_git_main: the hook body; reads the payload from stdin and prints a decision or nothing (callers then exit 0).
 guard_git_main() {
   sdlc_read_payload || exit 0
   _sdlc_command_get
-  local cmd="$REPLY" i seg w0 base
+  local cmd="$REPLY" i seg base rest segopt=--raw
   [ -n "$cmd" ] || exit 0
-  case "$cmd" in *git*|*gh*) ;; *) exit 0 ;; esac   # cheap pre-filter: nothing else can match
+  local lc="${cmd,,}"
+  case "$lc" in *git*|*gh*) ;; *) exit 0 ;; esac   # cheap pre-filter: nothing else can match
+  _sdlc_json_get tool_name
+  [ "${REPLY,,}" = powershell ] && segopt="--raw --ps"
 
   _sdlc_json_get cwd; _sdlc_posix "$REPLY"; cur="$REPLY"
   _sdlc_json_get agent_id
   SUB="$REPLY"   # non-empty = subagent
 
-  local segs="$(sdlc_segments --raw "$cmd")"
+  local segs="$(sdlc_segments $segopt "$cmd")"
   while IFS= read -r seg; do
     [ -n "$seg" ] || continue
     sdlc_words "$seg"
-    w0="${SDLC_W[0]}"
-    base="${w0##*/}"; base="${base%.exe}"; base="${base,,}"
+    wbase "${SDLC_W[0]}"; base="$REPLY"
     case "$base" in
       cd|pushd|chdir|set-location|sl)
         for ((i = 1; i < ${#SDLC_W[@]}; i++)); do
@@ -233,6 +247,17 @@ guard_git_main() {
         done ;;
       git) handle_git "$seg" ;;
       gh) handle_gh "$seg" ;;
+      echo|printf|grep|egrep|rg|man|which|type|where|whereis|write-host|write-output) ;;
+      *)
+        # Fail closed: a runner in front of git/gh (xargs, timeout, find -exec, eval, cmd /c, ...) still counts.
+        for ((i = 1; i < ${#SDLC_W[@]}; i++)); do
+          wbase "${SDLC_W[$i]}"
+          if [ "$REPLY" = git ] || [ "$REPLY" = gh ]; then
+            base="$REPLY"; rest="${SDLC_WR[*]:$i}"
+            if [ "$base" = git ]; then handle_git "$rest"; else handle_gh "$rest"; fi
+            break
+          fi
+        done ;;
     esac
   done <<< "$segs"
 }

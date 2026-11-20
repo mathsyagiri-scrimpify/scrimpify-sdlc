@@ -150,8 +150,10 @@ BEGIN { RS = "\001" }
 { process($0) }
 
 # process(s): split s into command segments (quote-aware) and flush each one.
-function process(s,   len, i, j, c, d, ct, u, nt, nq, bc, rc, btok, rtok, qs) {
-  len = length(s); nt = 0; nq = 0; bc = ""; rc = ""
+# Heredoc bodies and PowerShell here-strings are skipped as text (or processed as commands when they feed a shell);
+# an unmatched quote is a literal character, never "the rest of the command".
+function process(s,   len, i, j, k, c, d, ct, u, nt, nq, bc, rc, btok, rtok, qs, nh, hterm, hdash_a, hquot_a, sl, hdash, hquot, wst, w, q, pos, ln, body, line, nl) {
+  len = length(s); nt = 0; nq = 0; bc = ""; rc = ""; nh = 0
   for (i = 1; i <= len; i++) {
     c = substr(s, i, 1)
     if (c == "\\") {
@@ -160,26 +162,71 @@ function process(s,   len, i, j, c, d, ct, u, nt, nq, bc, rc, btok, rtok, qs) {
       bc = bc c d; rc = rc c d; i++
       continue
     }
+    if (ps && c == "`") {
+      d = substr(s, i + 1, 1)
+      if (d == "\n") { i++; continue }
+      bc = bc c d; rc = rc c d; i++
+      continue
+    }
+    if (ps && c == "@" && bc == "" && (substr(s, i + 1, 1) == "'" || substr(s, i + 1, 1) == "\"")) {
+      q = substr(s, i + 1, 1)
+      pos = index(substr(s, i + 2), "\n")
+      if (pos > 0 && substr(s, i + 2, pos - 1) ~ /^[ \t\r]*$/) {
+        ct = substr(s, i + 2 + pos)
+        k = index("\n" ct, "\n" q "@")
+        if (k > 0) { body = substr(ct, 1, k - 2); i = i + 2 + pos + k - 1 + 1 }
+        else { body = ct; i = len }
+        if (q == "\"") substs(body)
+        gsub(/\n/, " ", body); gsub(/"/, "'", body); gsub(/\\/, "/", body)
+        bc = bc "\"\""; rc = rc "\"" body "\""
+        continue
+      }
+    }
+    if (!ps && c == "<" && substr(s, i + 1, 1) == "<" && substr(s, i + 2, 1) != "<") {
+      j = i + 2
+      hdash = 0
+      if (substr(s, j, 1) == "-") { hdash = 1; j++ }
+      while (substr(s, j, 1) == " " || substr(s, j, 1) == "\t") j++
+      w = ""; hquot = 0; wst = substr(s, j, 1)
+      while (j <= len) {
+        d = substr(s, j, 1)
+        if (d == "'" || d == "\"") {
+          hquot = 1; q = d; j++
+          while (j <= len && substr(s, j, 1) != q) { w = w substr(s, j, 1); j++ }
+          j++
+          continue
+        }
+        if (d == "\\") { hquot = 1; j++; continue }
+        if (d == " " || d == "\t" || d == "\n" || d == ";" || d == "&" || d == "|" || d == "(" || d == ")" || d == "<" || d == ">") break
+        w = w d; j++
+      }
+      if (w != "" && (wst == "'" || wst == "\"" || wst == "\\" || wst ~ /[A-Za-z_]/)) { nh++; hterm[nh] = w; hdash_a[nh] = hdash; hquot_a[nh] = hquot; i = j - 1; continue }
+    }
     if (c == "'") {
       j = index(substr(s, i + 1), "'")
-      if (j == 0) { ct = substr(s, i + 1); i = len } else { ct = substr(s, i + 1, j - 1); i = i + j }
+      if (j == 0) { bc = bc c; rc = rc c; continue }
+      ct = substr(s, i + 1, j - 1); i = i + j
       gsub(/\n/, " ", ct)
       bc = bc "\"\""; rc = rc "'" ct "'"; qs[++nq] = ct
       continue
     }
     if (c == "\"") {
-      ct = ""; j = i + 1
+      ct = ""; j = i + 1; k = 0
       while (j <= len) {
         d = substr(s, j, 1)
-        if (d == "\\") { ct = ct d substr(s, j + 1, 1); j += 2; continue }
-        if (d == "\"") break
+        if (d == "\\" && !ps) { ct = ct d substr(s, j + 1, 1); j += 2; continue }
+        if (d == "`" && ps) { ct = ct d substr(s, j + 1, 1); j += 2; continue }
+        if (d == "\"") { k = 1; break }
         ct = ct d; j++
       }
+      if (!k) { bc = bc c; rc = rc c; continue }
       i = j
       substs(ct)
       gsub(/\n/, " ", ct)
       bc = bc "\"\""; rc = rc "\"" ct "\""
-      u = ct; gsub(/\\"/, "\"", u); qs[++nq] = u
+      u = ct
+      if (ps) gsub(/`"/, "\"", u); else gsub(/\\"/, "\"", u)
+      qs[++nq] = u
       continue
     }
     if (c == "#" && bc == "") {
@@ -190,16 +237,39 @@ function process(s,   len, i, j, c, d, ct, u, nt, nq, bc, rc, btok, rtok, qs) {
       if (bc != "") { btok[++nt] = bc; rtok[nt] = rc; bc = ""; rc = "" }
       continue
     }
-    if (c == "&" || c == "|" || c == ";" || c == "\n" || c == "(" || c == ")" || c == "`") {
+    if (c == "&" || c == "|" || c == ";" || c == "\n" || c == "(" || c == ")" || (!ps && c == "`")) {
       if (bc != "") { btok[++nt] = bc; rtok[nt] = rc; bc = ""; rc = "" }
       flush(nt, btok, rtok, nq, qs)
       nt = 0; nq = 0; split("", btok); split("", rtok); split("", qs)
+      if (c == "\n") {
+        if (nh > 0) {
+          pos = i + 1; sl = shellline
+          for (k = 1; k <= nh; k++) {
+            body = ""
+            while (pos <= len) {
+              ln = index(substr(s, pos), "\n")
+              if (ln == 0) { line = substr(s, pos); nl = len + 1 } else { line = substr(s, pos, ln - 1); nl = pos + ln }
+              u = line
+              if (hdash_a[k]) sub(/^\t+/, "", u)
+              pos = nl
+              if (u == hterm[k]) break
+              body = body line "\n"
+            }
+            if (sl) process(body)
+            else if (!hquot_a[k]) substs(body)
+          }
+          i = pos - 1
+          nh = 0
+        }
+        shellline = 0
+      }
       continue
     }
     bc = bc c; rc = rc c
   }
   if (bc != "") { btok[++nt] = bc; rtok[nt] = rc }
   flush(nt, btok, rtok, nq, qs)
+  shellline = 0
 }
 
 # substs(ct): process $(...) and `...` found inside a double-quoted string as their own commands.
@@ -227,7 +297,7 @@ function substs(ct,   t, i, d, j, c, e) {
 }
 
 # flush: strip leading wrappers, print the segment, and descend into `sh -c "..."`-style payloads.
-function flush(nt, btok, rtok, nq, qs,   st, t, i, b, r) {
+function flush(nt, btok, rtok, nq, qs,   st, t, i, b, r, sl0) {
   st = 1
   while (st <= nt) {
     t = btok[st]
@@ -244,19 +314,26 @@ function flush(nt, btok, rtok, nq, qs,   st, t, i, b, r) {
   b = btok[st]; r = rtok[st]
   for (i = st + 1; i <= nt; i++) { b = b " " btok[i]; r = r " " rtok[i] }
   if (raw) print r; else print b
-  if (nq > 0 && btok[st] ~ /^(.*\/)?(bash|sh|zsh|dash|ksh|eval|pwsh|powershell|cmd)(\.exe)?$/)
+  if (btok[st] ~ "^(.*[\\\\/])?(bash|sh|zsh|dash|ksh|eval|pwsh|powershell|cmd)(\\.exe)?$") {
+    shellline = 1
+    sl0 = shellline
     for (i = 1; i <= nq; i++) process(qs[i])
+    shellline = sl0
+  }
 }
 AWK
 
-# sdlc_segments [--raw] <command>: one segment per line, quote-aware split on && || ; | & newline ( ) and backtick;
+# sdlc_segments [--raw] [--ps] <command>: one segment per line, quote-aware split on && || ; | & newline ( ) and backtick;
 # quoted strings become "" (or stay intact with --raw); leading env/VAR=x/sudo/command/then/... stripped;
 # $(...) and `...` inside double quotes, and the payload of `bash -c "..."`, become segments too.
 sdlc_segments() {
-  local raw=0
-  if [ "$1" = "--raw" ]; then raw=1; shift; fi
+  local raw=0 ps=0
+  while :; do
+    case "$1" in --raw) raw=1 ;; --ps) ps=1 ;; *) break ;; esac
+    shift
+  done
   [ -n "$1" ] || return 0
-  printf '%s' "$1" | awk -v raw="$raw" "$SDLC_SEG_AWK"
+  printf '%s' "$1" | awk -v raw="$raw" -v ps="$ps" "$SDLC_SEG_AWK"
 }
 
 # sdlc_resolve_dir <base> <path>: print a posix, lexically collapsed path; <path> is taken relative to <base> unless absolute.

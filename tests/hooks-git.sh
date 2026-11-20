@@ -49,6 +49,17 @@ case "$(seg 'echo `git push origin main`')" in *"git push origin main"*) pass "b
 expect_eq "$(seg_raw "gh api graphql -f query='mutation{x}'")" "gh api graphql -f query='mutation{x}'" "--raw keeps quoted text"
 expect_eq "$(seg_raw 'FOO="a b" git commit -m "x y"')" 'git commit -m "x y"' "--raw strips prefix, keeps quotes"
 expect_empty "$(sdlc_segments '')" "empty command -> no segments"
+expect_eq "$(seg "cat <<'EOF'${NL}it's${NL}EOF${NL}git push origin main")" "cat|git push origin main" "heredoc body with an apostrophe is skipped"
+expect_eq "$(seg "cat <<-EOF${NL}	x${NL}	EOF${NL}git push")" "cat|git push" "<<- heredoc with tab-indented terminator"
+expect_eq "$(seg "cat <<EOF${NL}\$(git push origin main)${NL}EOF")" "cat|git push origin main" "unquoted heredoc body: substitutions are commands"
+expect_eq "$(seg "bash <<'EOF'${NL}git push origin main${NL}EOF")" "bash|git push origin main" "heredoc feeding a shell: body is commands"
+expect_eq "$(seg "cat <<EOF | bash${NL}git push origin main${NL}EOF")" "cat|bash|git push origin main" "heredoc piped to a shell: body is commands"
+expect_eq "$(seg 'echo $((1<<2))
+git push')" 'echo $|1<<2|git push' "arithmetic << is not a heredoc"
+expect_eq "$(seg "echo don't; git push origin main")" "echo don't|git push origin main" "unmatched ' is literal"
+expect_eq "$(seg 'echo "oops; git push origin main')" 'echo "oops|git push origin main' "unmatched \" is literal"
+expect_eq "$(sdlc_segments --ps 'git commit -m "a`"b"; git push origin main' | paste -sd'|' -)" 'git commit -m ""|git push origin main' "PowerShell backtick escapes a quote"
+expect_eq "$(sdlc_segments --ps "\$m = @'${NL}Don't${NL}'@${NL}git push" | paste -sd'|' -)" '$m = ""|git push' "PowerShell here-string skipped"
 
 echo "sdlc_git_target"
 expect_eq "$(sdlc_git_target 'git push origin main' /d/a/b)" "/d/a/b" "no -C -> cwd"
@@ -128,7 +139,7 @@ settle() {
 # t <main> <subagent> <cwd> <command> [tool]
 t() {
   local tool="${5:-Bash}" sm=""
-  [ "$1" = ask ] && [ "$2" = deny ] && sm=1
+  [ "$2" = deny ] && sm=1   # every subagent denial carries the "never push" instruction
   payload "$tool" "$3" "$4"; queue "main [$4]" "$1" "$PAYLOAD"
   payload "$tool" "$3" "$4" a1b2c3; queue "sub  [$4]" "$2" "$PAYLOAD" "$sm"
 }
@@ -221,6 +232,46 @@ t allow allow "$X" 'git status'
 t allow allow "$X" 'git status # git push origin main'
 t allow allow "$X" 'ls && git diff | head'
 t ask deny "$X" 'git status && gh pr create --fill'
+
+echo "heredocs, here-strings and unmatched quotes (fix round 1, finding 1)"
+t deny deny "$X" "git commit -F - <<'EOF'${NL}Don't break things${NL}EOF${NL}git push origin main"
+t deny deny "$X" "git commit -F - <<'EOF'${NL}Don't break things${NL}EOF${NL}git push --force origin 41-x"
+t deny deny "$M" "cat > n.md <<'EOF'${NL}it's${NL}EOF${NL}git commit -m x"
+t ask deny "$X" "\$m = @'${NL}Don't${NL}'@${NL}git commit -m \$m; git push -u origin 41-x" PowerShell
+t deny deny "$X" "cat <<'EOF'${NL}it's${NL}EOF${NL}git push origin main && echo 'done'"
+t deny deny "$X" "echo don't; git push origin main"
+t deny deny "$X" 'echo "oops; git push origin main'
+t deny deny "$X" "echo \$((1<<2))${NL}git push origin main"
+t deny deny "$X" "bash <<'EOF'${NL}git push origin main${NL}EOF"
+t ask deny "$X" "cat <<EOF | bash${NL}git push -u origin 41-x${NL}EOF"
+t deny deny "$X" "cat <<EOF${NL}\$(git push origin main)${NL}EOF"
+t allow allow "$X" "cat <<'EOF'${NL}git push origin main${NL}EOF"
+t allow allow "$X" "git commit -F - <<'EOF'${NL}Don't break things${NL}EOF"
+t allow allow "$X" 'git commit -m "it'"'"'s fine"'
+
+echo "runner prefixes (finding 2)"
+t ask deny "$X" 'echo main | xargs git push origin'
+t ask deny "$X" 'git branch --show-current | xargs git push -u origin'
+t ask deny "$X" 'timeout 60 git push -u origin 41-x'
+t ask deny "$X" 'nice git push -u origin 41-x'
+t deny deny "$X" 'find . -exec git push origin main \;'
+t deny deny "$X" 'eval git push origin main'
+t deny deny "$X" 'cmd /c git push origin main'
+t ask deny "$X" 'xargs gh pr create --fill'
+t allow allow "$X" 'echo git push origin main'
+t allow allow "$X" 'ls git'
+
+echo "Windows program paths and case (finding 3)"
+t deny deny "$X" '"C:\Program Files\Git\cmd\git.exe" push origin main'
+t ask deny "$X" '& "C:\Program Files\Git\cmd\git.exe" push -u origin 41-x' PowerShell
+t ask deny "$X" 'C:\tools\gh.exe pr create --fill'
+t deny deny "$X" 'Git push origin main'
+t deny deny "$X" 'git.EXE push origin main'
+t ask deny "$X" 'GH pr create --fill'
+
+echo "PowerShell backtick-escaped quote (finding 4)"
+t deny deny "$X" 'git commit -m "a`"b"; git push origin main' PowerShell
+t allow allow "$X" 'git commit -m "a`"b"' PowerShell
 
 echo "Windows cwd form"
 WINM="$(cd "$TMP/rm" && pwd -W 2>/dev/null)"
