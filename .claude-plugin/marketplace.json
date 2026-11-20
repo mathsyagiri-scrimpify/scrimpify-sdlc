@@ -1,0 +1,13 @@
+{
+  "name": "scrimpify-sdlc",
+  "owner": {
+    "name": "Scrimpify"
+  },
+  "plugins": [
+    {
+      "name": "scrimpify-sdlc",
+      "source": "./plugin",
+      "description": "A software delivery workflow for Claude Code: shape, design, build, verify and ship with guard hooks and skills."
+    }
+  ]
+}

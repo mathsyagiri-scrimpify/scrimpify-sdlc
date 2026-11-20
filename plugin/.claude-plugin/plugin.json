@@ -1,0 +1,7 @@
+{
+  "name": "scrimpify-sdlc",
+  "version": "0.1.0",
+  "description": "A software delivery workflow for Claude Code: shape, design, build, verify and ship with guard hooks and skills.",
+  "license": "MIT",
+  "repository": "https://github.com/mathsyagiri-scrimpify/scrimpify-sdlc"
+}
