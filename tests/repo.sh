@@ -5,15 +5,15 @@ source "$ROOT/tests/lib.sh"
 
 # manifests agree on version
 ver="$(tr -d '[:space:]' < "$ROOT/plugin/VERSION")"
-pj="$(python -c "import json,sys;print(json.load(open(sys.argv[1]))['version'])" "$ROOT/plugin/.claude-plugin/plugin.json")"
+pj="$(pyjson "import json,sys;print(json.load(open(sys.argv[1]))['version'])" "$ROOT/plugin/.claude-plugin/plugin.json")"
 expect_eq "$pj" "$ver" "plugin.json version equals VERSION"
 expect_eq "$ver" "0.1.0" "version is 0.1.0"
 
 # marketplace
 mk="$ROOT/.claude-plugin/marketplace.json"
-count="$(python -c "import json,sys;print(len(json.load(open(sys.argv[1]))['plugins']))" "$mk")"
-name="$(python -c "import json,sys;print(json.load(open(sys.argv[1]))['plugins'][0]['name'])" "$mk")"
-src="$(python -c "import json,sys;print(json.load(open(sys.argv[1]))['plugins'][0]['source'])" "$mk")"
+count="$(pyjson "import json,sys;print(len(json.load(open(sys.argv[1]))['plugins']))" "$mk")"
+name="$(pyjson "import json,sys;print(json.load(open(sys.argv[1]))['plugins'][0]['name'])" "$mk")"
+src="$(pyjson "import json,sys;print(json.load(open(sys.argv[1]))['plugins'][0]['source'])" "$mk")"
 expect_eq "$count" "1" "marketplace has one plugin"
 expect_eq "$name" "scrimpify-sdlc" "marketplace plugin name"
 expect_eq "$src" "./plugin" "marketplace plugin source"
@@ -23,5 +23,7 @@ expect_eq "$src" "./plugin" "marketplace plugin source"
   && pass "refute_contains on empty haystack fails" || fail "refute_contains on empty haystack must fail"
 [ "$(bash -c 'source "$1/tests/lib.sh"; finish >/dev/null' _ "$ROOT"; echo $?)" = "1" ] \
   && pass "finish fails with zero passes" || fail "finish must fail with zero passes"
+
+[[ "$(PATH=/nonexistent "$BASH" -c 'source "$1/tests/lib.sh"; pyjson "print(1)"' _ "$ROOT" 2>&1)" == *"neither python3 nor python"* ]] && pass "pyjson fails loudly without python" || fail "pyjson must fail loudly without python"
 
 finish
