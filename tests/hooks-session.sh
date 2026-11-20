@@ -64,6 +64,13 @@ expect_eq "$(sdlc_repo_of "$TMP/r/sub/dir/not-yet/file.txt")" "$(sdlc_to_posix_p
 expect_empty "$(sdlc_repo_of "$TMP/nope-outside/file.txt")" "repo_of outside any repo is empty"
 repo="$(sdlc_repo_of "$TMP/r/sub")"
 expect_eq "$(sdlc_rel_path "$repo" "$repo/sub/dir/x.cs")" "sub/dir/x.cs" "rel_path"
+expect_eq "$(sdlc_rel_path "$repo" "$repo/a/./b")" "a/b" "rel_path collapses ."
+expect_eq "$(sdlc_rel_path "$repo" "$repo/src/Modules/Inventory/../Billing/x.cs")" "src/Modules/Billing/x.cs" "rel_path resolves .."
+expect_eq "$(sdlc_rel_path "$repo" "$repo/a//b")" "a/b" "rel_path collapses //"
+expect_empty "$(sdlc_rel_path "$repo" "$repo/../x.cs")" "rel_path above repo root is empty"
+expect_empty "$(sdlc_rel_path "$repo" "$repo/a/../../x.cs")" "rel_path climbing out is empty"
+expect_eq "$(sdlc_rel_path /d/r 'D:\r\src\..\x.cs')" "x.cs" "rel_path windows form with .."
+expect_eq "$(sdlc_rel_path 'D:\r' 'D:\r\src\.\a\..\x.cs')" "src/x.cs" "rel_path windows repo and path"
 expect_eq "$(sdlc_branch "$repo")" "main" "branch"
 git -C "$TMP/r" checkout -q --detach
 expect_empty "$(sdlc_branch "$repo")" "branch empty when detached"

@@ -60,11 +60,26 @@ sdlc_repo_of() {
   sdlc_to_posix_path "$top"
 }
 
-# sdlc_rel_path <repo> <abs-path>: print abs-path relative to repo (case-insensitive prefix); empty if outside.
+# sdlc_collapse_path <posix-path>: drop empty and "." segments and resolve ".." lexically (no filesystem access).
+sdlc_collapse_path() {
+  local p="$1" lead="" seg out=()
+  case "$p" in /*) lead="/" ;; esac
+  local IFS=/
+  for seg in $p; do
+    case "$seg" in
+      ""|.) ;;
+      ..) if [ "${#out[@]}" -gt 0 ] && [ "${out[${#out[@]}-1]}" != ".." ]; then unset 'out[${#out[@]}-1]'; elif [ -z "$lead" ]; then out+=(..); fi ;;
+      *) out+=("$seg") ;;
+    esac
+  done
+  printf '%s%s' "$lead" "${out[*]}"
+}
+
+# sdlc_rel_path <repo> <abs-path>: print abs-path (with . and .. collapsed) relative to repo; empty if outside.
 sdlc_rel_path() {
   local repo p lr lp
-  repo="$(sdlc_to_posix_path "$1")"; repo="${repo%/}"
-  p="$(sdlc_to_posix_path "$2")"
+  repo="$(sdlc_collapse_path "$(sdlc_to_posix_path "$1")")"
+  p="$(sdlc_collapse_path "$(sdlc_to_posix_path "$2")")"
   lr="${repo,,}"; lp="${p,,}"
   case "$lp" in
     "$lr"/*) printf '%s' "${p:$((${#repo} + 1))}" ;;
