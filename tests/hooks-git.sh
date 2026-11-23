@@ -292,6 +292,21 @@ t ask deny "$X" '1 | % { git push -u origin 41-x }' PowerShell
 t deny deny "$X" "Write-Output done\\${NL}git push origin main" PowerShell
 t deny deny "$X" 'echo a\; git push origin main' PowerShell
 
+echo "fix round 3: PowerShell words (1), graphql through substitutions (2), parser blow-up (3)"
+t deny deny "$X" 'git -c "core.x=a\" push origin main' PowerShell
+t deny deny "$X" 'git push -o "ci\" origin main' PowerShell
+t ask deny "$X" "gh api graphql -f query=\"\$(cat <<'EOF'${NL}mutation { addComment(input:{subjectId:\"x\",body:\"y\"}) { clientMutationId } }${NL}EOF${NL})\""
+t ask deny "$X" "gh api graphql -f query=\"\$(echo 'mutation{x}')\""
+t ask deny "$X" 'gh api graphql -f query="$q"'
+t ask deny "$X" 'gh api graphql -f query="$(cat q.graphql)"'
+t ask deny "$X" "gh api graphql -f query='fragment X on Y {a}'"
+t allow allow "$X" "gh api graphql -f query='  {viewer{login}}'"
+t allow allow "$X" "gh api graphql -F owner=o -f query='query(\$owner:String!){repositoryOwner(login:\$owner){login}}'"
+BLOW=""; for ((n = 0; n < 12; n++)); do BLOW+='git push origin main; echo "$('; done
+t deny deny "$X" "$BLOW"
+BIG=""; for ((n = 0; n < 1200; n++)); do BIG+='echo aaaaaaaaaaaaaaaaaaaaaaaa; '; done
+t ask deny "$X" "${BIG}git push -u origin 41-x"
+
 echo "Windows cwd form"
 WINM="$(cd "$TMP/rm" && pwd -W 2>/dev/null)"
 if [ -n "$WINM" ] && [[ "$WINM" =~ ^[A-Za-z]: ]]; then
@@ -313,6 +328,24 @@ check "command not a string" allow '{"tool_name":"Bash","tool_input":{"command":
 checkp "non-git command" allow Bash "$X" 'ls -la'
 check "decoy command key before tool_input" ask \
   '{"command":"ls","tool_name":"Bash","tool_input":{"command":"git push -u origin 41-x"},"cwd":"'"$X"'"}'
+
+echo "words in PowerShell mode (finding 1)"
+SDLC_PSMODE=1 sdlc_words 'git -c "core.x=a\" push origin main'
+expect_eq "${#SDLC_W[@]}" "6" "PowerShell: backslash does not escape the closing quote ($(printf '%s|' "${SDLC_W[@]}"))"
+SDLC_PSMODE="" sdlc_words 'git -c "core.x=a\" push origin main"'
+expect_eq "${#SDLC_W[@]}" "3" "bash: backslash-quote stays inside the string"
+
+echo "blow-up guard (finding 3)"
+B40=""; for ((n = 0; n < 40; n++)); do B40+='git push origin main; echo "$('; done
+payload Bash "$X" "$B40"
+T0=$SECONDS
+OUT="$( ( guard_git_main <<<"$PAYLOAD" ) 2>/dev/null )"
+EL=$((SECONDS - T0))
+if [ "$EL" -le 10 ]; then pass "n=40 unclosed \"\$( returns in ${EL}s"; else fail "n=40 unclosed \"\$( took ${EL}s"; fi
+expect_contains "$OUT" '"permissionDecision":"deny"' "n=40 unclosed \"\$( still gets a decision"
+payload Bash "$X" "${BIG}git push -u origin 41-x"
+OUT="$( ( guard_git_main <<<"$PAYLOAD" ) 2>/dev/null )"
+expect_contains "$OUT" 'command too complex for guard-git to check' "over-budget command fails closed with the reason"
 
 settle
 finish

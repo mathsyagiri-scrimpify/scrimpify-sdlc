@@ -147,13 +147,27 @@ _sdlc_command_get() {
 
 read -r -d '' SDLC_SEG_AWK <<'AWK' || true
 BEGIN { RS = "\001" }
-{ process($0) }
+{
+  # Work budget: the parser must stay linear-ish. Past 8x the input (or 32 KB) it gives up and the hook fails closed.
+  LIMIT = 8 * length($0) + 64
+  if (length($0) > 32768) TOOC = 1
+  else process($0)
+  if (TOOC) print "@@guard-git:too-complex@@"
+}
+
+# quotesafe(t): text made safe to embed inside a double-quoted raw token (no newlines, quotes or backslashes).
+function quotesafe(t) {
+  gsub(/\n/, " ", t); gsub(/"/, "'", t); gsub(/\\/, "/", t)
+  return t
+}
 
 # process(s): split s into command segments (quote-aware) and flush each one.
 # Heredoc bodies and PowerShell here-strings are skipped as text (or processed as commands when they feed a shell);
 # an unmatched quote is a literal character, never "the rest of the command".
-function process(s,   len, i, j, k, c, d, ct, u, nt, nq, bc, rc, btok, rtok, qs, nh, hterm, hdash_a, hquot_a, sl, e, q, pos, body) {
+function process(s,   len, i, j, k, c, d, ct, u, nt, nq, bc, rc, btok, rtok, qs, nh, hterm, hdash_a, hquot_a, sl, e, q, pos, body, rct, inner) {
   len = length(s); nt = 0; nq = 0; bc = ""; rc = ""; nh = 0
+  WORK += len
+  if (TOOC || WORK > LIMIT) { TOOC = 1; return }
   for (i = 1; i <= len; i++) {
     c = substr(s, i, 1)
     if (c == "\\" && !ps) {
@@ -195,26 +209,31 @@ function process(s,   len, i, j, k, c, d, ct, u, nt, nq, bc, rc, btok, rtok, qs,
       continue
     }
     if (c == "\"") {
-      ct = ""; j = i + 1; k = 0
+      ct = ""; rct = ""; j = i + 1; k = 0
       while (j <= len) {
         d = substr(s, j, 1)
-        if (d == "\\" && !ps) { ct = ct d substr(s, j + 1, 1); j += 2; continue }
-        if (d == "`" && ps) { ct = ct d substr(s, j + 1, 1); j += 2; continue }
+        if (d == "\\" && !ps) { d = d substr(s, j + 1, 1); ct = ct d; rct = rct d; j += 2; continue }
+        if (d == "`" && ps) { d = d substr(s, j + 1, 1); ct = ct d; rct = rct d; j += 2; continue }
         if (d == "$" && substr(s, j + 1, 1) == "(") {
-          # a command substitution is parsed as its own command (quotes and heredocs inside it are its own)
+          # A command substitution is parsed as its own command (its quotes and heredocs are its own). An unclosed one
+          # makes this quote unmatched, and the outer scan then reads the text once, as plain tokens (no rescan blow-up).
           e = findclose(s, j + 2)
-          process(substr(s, j + 2, e - (j + 2)))
-          ct = ct "$()"; j = e + 1
+          if (e > len) break
+          inner = substr(s, j + 2, e - (j + 2))
+          process(inner)
+          ct = ct "$()"
+          rct = rct "$(" quotesafe(inner) ")"   # the raw segment keeps the text so rules (graphql) can read it
+          j = e + 1
           continue
         }
         if (d == "\"") { k = 1; break }
-        ct = ct d; j++
+        ct = ct d; rct = rct d; j++
       }
       if (!k) { bc = bc c; rc = rc c; continue }
       i = j
       substs(ct)
-      gsub(/\n/, " ", ct)
-      bc = bc "\"\""; rc = rc "\"" ct "\""
+      gsub(/\n/, " ", ct); gsub(/\n/, " ", rct)
+      bc = bc "\"\""; rc = rc "\"" rct "\""
       u = ct
       if (ps) gsub(/`"/, "\"", u); else gsub(/\\"/, "\"", u)
       qs[++nq] = u
@@ -413,13 +432,21 @@ _sdlc_resolve() {
   _sdlc_collapse "$p"
 }
 
-# sdlc_words <segment>: split a segment into shell words; sets arrays SDLC_WR (as written, quotes kept) and SDLC_W (quotes removed).
+# sdlc_words <segment>: split a segment into shell words (PowerShell rules when SDLC_PSMODE is non-empty); sets arrays SDLC_WR (as written, quotes kept) and SDLC_W (quotes removed).
 sdlc_words() {
   SDLC_WR=(); SDLC_W=()
-  local rest="$1" tok dq sq re
-  dq='"([^"\\]|\\.)*"'
+  local rest="$1" tok dq sq esc cls re
   sq="'[^']*'"
-  re="^[[:space:]]*((${dq}|${sq}|\\\\.|[^[:space:]'\"\\\\])+)"
+  if [ -n "$SDLC_PSMODE" ]; then   # PowerShell: backtick escapes, backslash is an ordinary character
+    dq='"([^"`]|`.)*"'
+    esc='`.'
+    cls='[^[:space:]'\''"`]'
+  else
+    dq='"([^"\\]|\\.)*"'
+    esc='\\.'
+    cls='[^[:space:]'\''"\\]'
+  fi
+  re="^[[:space:]]*((${dq}|${sq}|${esc}|${cls})+)"
   while [[ "$rest" =~ $re ]]; do
     tok="${BASH_REMATCH[1]}"
     rest="${rest:${#BASH_REMATCH[0]}}"

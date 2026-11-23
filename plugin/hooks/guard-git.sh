@@ -150,7 +150,7 @@ in_list() {
 }
 
 handle_api() { # seg  (SDLC_W/SDLC_WR hold the words of "gh api ...")
-  local seg="$1" k n="${#SDLC_W[@]}" wr w method="" fields=0 endpoint="" skip=0
+  local seg="$1" k n="${#SDLC_W[@]}" wr w method="" fields=0 endpoint="" skip=0 qtext="" hasq=0 nv
   for ((k = 2; k < n; k++)); do
     wr="${SDLC_WR[$k]}"; w="${SDLC_W[$k]}"
     if [ "$skip" = 1 ]; then skip=0; continue; fi
@@ -158,9 +158,17 @@ handle_api() { # seg  (SDLC_W/SDLC_WR hold the words of "gh api ...")
       -X|--method) method="${SDLC_W[$((k + 1))]}"; skip=1 ;;
       --method=*) method="${w#--method=}" ;;
       -X?*) method="${w#-X}" ;;
-      -f|-F|--field|--raw-field|--input) fields=1; skip=1 ;;
-      --field=*|--raw-field=*|--input=*) fields=1 ;;
-      -f?*|-F?*) fields=1 ;;
+      -f|-F|--field|--raw-field)
+        fields=1; skip=1; nv="${SDLC_W[$((k + 1))]}"
+        [[ "$nv" == query=* ]] && { hasq=1; qtext="${nv#query=}"; } ;;
+      --input) fields=1; skip=1 ;;
+      --field=*|--raw-field=*)
+        fields=1; nv="${w#*=}"
+        [[ "$nv" == query=* ]] && { hasq=1; qtext="${nv#query=}"; } ;;
+      --input=*) fields=1 ;;
+      -f?*|-F?*)
+        fields=1; nv="${w:2}"
+        [[ "$nv" == query=* ]] && { hasq=1; qtext="${nv#query=}"; } ;;
       -H|--header|-q|--jq|-t|--template|-p|--preview|--cache|--hostname) skip=1 ;;
       -*) ;;
       *) [ -n "$endpoint" ] || endpoint="$w" ;;
@@ -172,6 +180,16 @@ handle_api() { # seg  (SDLC_W/SDLC_WR hold the words of "gh api ...")
     local low="${seg,,}"
     if [[ "$low" =~ (^|[^a-z0-9_])mutation([^a-z0-9_]|$) ]] || [[ "$low" =~ query=@ ]] || [[ "$low" =~ --input ]]; then
       outward "gh api graphql mutation" "$seg"
+    fi
+    # A query whose visible text is not plainly "query ..." or "{ ... }" (a variable, a substitution, a file) cannot be
+    # checked, so it counts as a write.
+    if [ "$hasq" = 1 ]; then
+      qtext="${qtext#"${qtext%%[![:space:]]*}"}"
+      qtext="${qtext,,}"
+      case "$qtext" in
+        query*|"{"*) ;;
+        *) outward "gh api graphql query that cannot be verified as read-only" "$seg" ;;
+      esac
     fi
     return 0
   fi
@@ -243,7 +261,11 @@ guard_git_main() {
   _sdlc_json_get agent_id
   SUB="$REPLY"   # non-empty = subagent
 
+  SDLC_PSMODE="$PSMODE"
   local segs="$(sdlc_segments $segopt "$cmd")"
+  if [[ "$segs" == *'@@guard-git:too-complex@@'* ]]; then
+    outward "command too complex for guard-git to check" "$cmd"
+  fi
   while IFS= read -r seg; do
     [ -n "$seg" ] || continue
     sdlc_words "$seg"
